@@ -1,0 +1,73 @@
+import json
+import networkx as nx
+import pandas as pd
+import requests
+from time import sleep
+
+Graph = nx.MultiDiGraph() #создаем граф
+
+GlobDir = "" #ваша директория
+
+data = []
+#очищаем датасет от предвыборных деклараций, оставляем только антикоррупционные
+with codecs.open(GlobDir+'declarations.json', 'r', 'utf-8') as f:
+    json_data = json.loads(f.read())
+    
+for i in json_data:
+    if i['main']['document_type']['id'] == 1:
+        person_id = i['main']['person']['id']
+        person_name = i['main']['person']['name']
+        
+        #добавляет персон на граф
+        if not Graph.has_node(person_id):
+            Graph.add_node(person_id)
+            Graph.node[person_id]['Name'] = person_name
+            Graph.node[person_id]['Type'] = 'person'
+            
+        office_id = i['main']['office']['id']      
+            
+        year = i['main']['year']
+        data.append([office_id,person_id,year]) 
+        
+        Graph.add_edge(person_id,office_id)
+
+
+opy = pd.DataFrame(data)
+opy.columns=['office_id', 'person_id', 'year']
+
+#находим людей, у которых есть от двух коллег в разных организациях
+def coworkers(person):
+    return (opy.query('person_id == {}'.format(person)).drop('person_id', axis=1)
+            .merge(opy, on=['office_id', 'year']).
+            groupby('person_id')['office_id'].
+            nunique().sort_values(ascending=False).drop(person).to_frame().query('office_id > 1'))
+
+#строим между ними связи
+for i in Graph.nodes():
+    collegs = (list(coworkers(int(i)).index))
+    for ID in collegs:
+        if not Graph.has_edge(i,ID):
+            Graph.add_edge(i,ID)  
+
+#удаляем тех, у кого нет коллег
+for i in Graph.nodes():
+    if len(Graph.neighbors(i))==0:
+        Graph.remove_node(i)
+#добавляем на граф места работы персон
+for ID in Graph.nodes():
+    r = requests.get('https://declarator.org/api/v1/search/sections/?person='+str(ID))
+    sleep(0.5)
+    for i in r.json()['results']:
+        if i['main']['document_type']['id']==1:
+            office_id = i['main']['office']['id']
+            office_id = 'o_' + str(office_id)
+            office_name = i['main']['office']['name']
+            
+            if not Graph.has_node(office_id):
+                Graph.add_node(office_id)
+                Graph.node[office_id]['Name'] = office_name
+                
+            if not Graph.has_edge(ID, office_id):
+                Graph.add_edge(ID, office_id)
+#сохраняем граф                
+nx.write_gexf(Graph, GlobDir + 'declarator_groups_and_officies' + '.gexf')    
